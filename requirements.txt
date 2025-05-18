@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+google-generativeai
+supabase-py
+python-dotenv
+langchain
+langchain-community
+sentence-transformers
+requests
