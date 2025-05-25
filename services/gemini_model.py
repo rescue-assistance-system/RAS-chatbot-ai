@@ -1,7 +1,13 @@
 import google.generativeai as genai
 import os
+from dotenv import load_dotenv
 
-gemini_api_key = os.getenv("GEMINI_API_KEY")
+load_dotenv()
+
+gemini_api_key = os.getenv("GEMINI_API_KEY")  
+if not gemini_api_key:
+    raise Exception("Missing GEMINI_API_KEY environment variable.")
+
 genai.configure(api_key=gemini_api_key)
 
 model = genai.GenerativeModel(
@@ -25,5 +31,10 @@ If the question is outside of this scope (e.g., cooking, programming, finance), 
     generation_config=genai.GenerationConfig(temperature=0.7),
 )
 
-
 chat = model.start_chat(history=[])
+
+
+def ask(prompt: str) -> str:
+    """Gửi prompt và trả về text trả lời từ Gemini."""
+    response = chat.send_message(prompt)
+    return response.text

@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-
+from utils.intent_classifier import classify_intent_with_gemini
+from utils.ras_reader import read_ras_info_md
 from services.weather import get_weather_by_location
 from services.vectorstore import initialize_vector_store
 from services.gemini_model import chat
@@ -9,23 +10,26 @@ from utils.formatter import format_guide_for_victims
 from utils.prompt_templates import default_response_template
 from langchain.schema.runnable import RunnablePassthrough
 
-# Khởi tạo FastAPI app
+# Create FastAPI app
 app = FastAPI()
 
-# Cho phép CORS để FE có thể gọi API
+# Accept CORS for FE can call API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Bạn nên giới hạn domain thật sự trong production
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Dữ liệu truyền lên từ FE
+
+# Data model for request
 class ChatRequest(BaseModel):
     user_input: str
 
-# Khởi tạo vectorstore
+
+# === Initialize Vector Store ===
+# Initialize the vector store and retriever
 vectorstore = initialize_vector_store()
 retriever = vectorstore.as_retriever()
 
@@ -55,6 +59,16 @@ If the context is not sufficient, use your general emergency knowledge to provid
 
 
 def handle_user_input(user_input: str):
+
+    intent = classify_intent_with_gemini(user_input)
+    if intent.startswith("ras_"):
+        ras_data = read_ras_info_md()
+        return {
+            "type": "ras_info",
+            "category": intent,
+            "content": ras_data.get(intent, "No matching content found."),
+        }
+
     location_info = None
     if "lat=" in user_input and "lon=" in user_input:
         try:
@@ -68,10 +82,12 @@ def handle_user_input(user_input: str):
     if docs:
         if len(docs) == 1:
             guide = docs[0]
-            formatted = format_guide_for_victims({
-                "title": guide.metadata["title"],
-                "content": guide.page_content,
-            })
+            formatted = format_guide_for_victims(
+                {
+                    "title": guide.metadata["title"],
+                    "content": guide.page_content,
+                }
+            )
             return {
                 "type": "guide",
                 "title": guide.metadata["title"],
