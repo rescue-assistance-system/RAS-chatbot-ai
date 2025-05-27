@@ -1,8 +1,8 @@
 from langchain_community.vectorstores import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
-from services.supabase_client import supabase
 
+from services.supabase_client import supabase
 embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 

@@ -9,6 +9,7 @@ from services.gemini_model import chat
 from utils.formatter import format_guide_for_victims
 from utils.prompt_templates import default_response_template
 from langchain.schema.runnable import RunnablePassthrough
+from services.rescue import find_nearest_rescue_team, format_rescue_teams_text
 
 # Create FastAPI app
 app = FastAPI()
@@ -69,14 +70,49 @@ def handle_user_input(user_input: str):
             "content": ras_data.get(intent, "No matching content found."),
         }
 
+    if intent == "rescue-team":
+        if "lat=" in user_input and "lon=" in user_input:
+            try:
+                lat = float(user_input.split("lat=")[1].split()[0])
+                lon = float(user_input.split("lon=")[1].split()[0])
+                rescue_teams = find_nearest_rescue_team(lat, lon)
+                formatted_text = format_rescue_teams_text(rescue_teams)
+                return {
+                    "type": "rescue_team",
+                    "teams": formatted_text,
+                }
+            except Exception as e:
+                return {
+                    "type": "rescue_team",
+                    "error": f"Error parsing location or finding teams: {str(e)}",
+                }
+        else:
+            return {
+                "type": "rescue_team",
+                "error": "Missing location info. Please include lat= and lon= in your message.",
+            }
+
     location_info = None
-    if "lat=" in user_input and "lon=" in user_input:
-        try:
-            lat = float(user_input.split("lat=")[1].split()[0])
-            lon = float(user_input.split("lon=")[1].split()[0])
-            location_info = get_weather_by_location(lat, lon)
-        except:
-            location_info = "Unable to extract location from your input."
+    if intent == "weather":
+        if "lat=" in user_input and "lon=" in user_input:
+            try:
+                lat = float(user_input.split("lat=")[1].split()[0])
+                lon = float(user_input.split("lon=")[1].split()[0])
+                weather_info = get_weather_by_location(lat, lon)
+                return {
+                    "type": "weather",
+                    "response": weather_info,
+                }
+            except Exception as e:
+                return {
+                    "type": "weather",
+                    "response": f"❌ Error parsing location: {str(e)}",
+                }
+        else:
+            return {
+                "type": "weather",
+                "response": "❌ Please provide your location with lat= and lon=.",
+            }
 
     docs = retriever.invoke(user_input)
     if docs:

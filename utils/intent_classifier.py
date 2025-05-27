@@ -16,9 +16,11 @@ Given the user input, classify it into one of the following categories:
 - ras_usage
 - ras_features
 - ras_target
+- rescue-team
 - general
+- weather
 
-Return only the category name (e.g., "ras_info") and nothing else.
+Return only the category name (e.g., "ras_info", "weather",  "rescue_team") and nothing else.
 
 User input: "{user_input}"
 """
