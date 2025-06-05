@@ -10,8 +10,11 @@ from utils.formatter import format_guide_for_victims
 from utils.prompt_templates import default_response_template
 from langchain.schema.runnable import RunnablePassthrough
 from services.rescue import find_nearest_rescue_team, format_rescue_teams_text
+import time
+from typing import Optional
 
-# Create FastAPI app
+ai_call_count = 0
+
 app = FastAPI()
 
 # Accept CORS for FE can call API
@@ -27,6 +30,8 @@ app.add_middleware(
 # Data model for request
 class ChatRequest(BaseModel):
     user_input: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
 
 # === Initialize Vector Store ===
@@ -59,27 +64,35 @@ If the context is not sufficient, use your general emergency knowledge to provid
     return prompt
 
 
-def handle_user_input(user_input: str):
+def safe_send_message(prompt):
+    global ai_call_count
+    ai_call_count += 1  # đếm số lần gọi AI
+    print(f"[AI CALL LOG] Gemini đã được gọi {ai_call_count} lần.")
+    return chat.send_message(prompt)
+
+
+def handle_user_input(user_input: str, lat: float = None, lon: float = None):
 
     intent = classify_intent_with_gemini(user_input)
     if intent.startswith("ras_"):
         ras_data = read_ras_info_md()
         return {
-            "type": "ras_info",
+            # "type": "ras_info",
             "category": intent,
             "content": ras_data.get(intent, "No matching content found."),
         }
 
     if intent == "rescue-team":
-        if "lat=" in user_input and "lon=" in user_input:
+        if lat is not None and lon is not None:
             try:
-                lat = float(user_input.split("lat=")[1].split()[0])
-                lon = float(user_input.split("lon=")[1].split()[0])
+                # lat = float(user_input.split("lat=")[1].split()[0])
+                # lon = float(user_input.split("lon=")[1].split()[0])
                 rescue_teams = find_nearest_rescue_team(lat, lon)
                 formatted_text = format_rescue_teams_text(rescue_teams)
                 return {
-                    "type": "rescue_team",
-                    "teams": formatted_text,
+                    # "type": "rescue_team",
+                    "category": intent,
+                    "content": formatted_text,
                 }
             except Exception as e:
                 return {
@@ -92,26 +105,29 @@ def handle_user_input(user_input: str):
                 "error": "Missing location info. Please include lat= and lon= in your message.",
             }
 
-    location_info = None
+    # location_info = None
     if intent == "weather":
-        if "lat=" in user_input and "lon=" in user_input:
+        if lat is not None and lon is not None:
             try:
-                lat = float(user_input.split("lat=")[1].split()[0])
-                lon = float(user_input.split("lon=")[1].split()[0])
+                # lat = float(user_input.split("lat=")[1].split()[0])
+                # lon = float(user_input.split("lon=")[1].split()[0])
                 weather_info = get_weather_by_location(lat, lon)
                 return {
-                    "type": "weather",
-                    "response": weather_info,
+                    # "type": "weather",
+                    "category": intent,
+                    "content": weather_info,
                 }
             except Exception as e:
                 return {
-                    "type": "weather",
-                    "response": f"❌ Error parsing location: {str(e)}",
+                    # "type": "weather",
+                    "category": intent,
+                    "content": f"❌ Error parsing location: {str(e)}",
                 }
         else:
             return {
-                "type": "weather",
-                "response": "❌ Please provide your location with lat= and lon=.",
+                # "type": "weather",
+                "category": intent,
+                "content": "❌ Please provide your location with lat= and lon=.",
             }
 
     docs = retriever.invoke(user_input)
@@ -121,6 +137,7 @@ def handle_user_input(user_input: str):
             formatted = format_guide_for_victims(
                 {
                     "title": guide.metadata["title"],
+                    "category": intent,
                     "content": guide.page_content,
                 }
             )
@@ -133,10 +150,11 @@ def handle_user_input(user_input: str):
             }
         else:
             prompt = build_prompt_with_context(user_input, retriever)
-            response = chat.send_message(prompt).text.strip()
+            response = safe_send_message(prompt).text.strip()
             return {
-                "type": "summary",
-                "response": response,
+                # "type": "summary",
+                "category": intent,
+                "content": response,
             }
     else:
         context = (
@@ -147,11 +165,12 @@ def handle_user_input(user_input: str):
         rag_chain = (
             {"context": lambda _: context, "question": RunnablePassthrough()}
             | default_response_template
-            | (lambda x: chat.send_message(x.text).text.strip())
+            | (lambda x: safe_send_message(x.text).text.strip())
         )
         return {
             "type": "general",
-            "response": rag_chain.invoke(user_input),
+            "category": intent,
+            "content": rag_chain.invoke(user_input),
         }
 
 
@@ -159,7 +178,7 @@ def handle_user_input(user_input: str):
 @app.post("/chat")
 async def chat_with_ai(request: ChatRequest):
     try:
-        result = handle_user_input(request.user_input)
+        result = handle_user_input(request.user_input, request.lat, request.lon)
         return {"success": True, "data": result}
     except Exception as e:
         return {"success": False, "error": str(e)}
