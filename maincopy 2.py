@@ -1,0 +1,195 @@
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from utils.intent_classifier import classify_intent_with_gemini
+from utils.ras_reader import read_ras_info_md
+from services.weather import get_weather_by_location
+from services.vectorstore import initialize_vector_store
+from services.gemini_model import chat
+from utils.formatter import format_guide_for_victims
+from utils.prompt_templates import default_response_template
+from langchain.schema.runnable import RunnablePassthrough
+from services.rescue import find_nearest_rescue_team, format_rescue_teams_text
+import time
+from typing import Optional
+
+ai_call_count = 0
+
+app = FastAPI()
+
+# Accept CORS for FE can call API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Data model for request
+class ChatRequest(BaseModel):
+    user_input: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+
+# === Initialize Vector Store ===
+# Initialize the vector store and retriever
+vectorstore = initialize_vector_store()
+retriever = vectorstore.as_retriever()
+
+
+# === Logic ===
+def build_prompt_with_context(user_input, retriever):
+    docs = retriever.invoke(user_input)
+    if not docs:
+        context = "No relevant information was found in the current knowledge base. Please use the base model to answer the question."
+    else:
+        sorted_docs = sorted(docs, key=lambda d: d.metadata.get("score", 1.0))
+        top_docs = sorted_docs[: min(3, len(sorted_docs))]
+        context = "\n\n".join([doc.page_content for doc in top_docs])
+
+    prompt = f"""
+Context (may be empty if no relevant documents found):
+{context}
+
+User question:
+{user_input}
+
+You are an AI emergency assistant. The user is in a possible medical emergency.
+Please provide clear, direct, and helpful instructions based on the following context.
+If the context is not sufficient, use your general emergency knowledge to provide first aid guidance for the user's situation.
+"""
+    return prompt
+
+
+def safe_send_message(prompt):
+    global ai_call_count
+    ai_call_count += 1  # đếm số lần gọi AI
+    print(f"[AI CALL LOG] Gemini đã được gọi {ai_call_count} lần.")
+    return chat.send_message(prompt)
+
+
+def handle_user_input(user_input: str, lat: float = None, lon: float = None):
+
+    intent = classify_intent_with_gemini(user_input)
+    if intent.startswith("ras_"):
+        ras_data = read_ras_info_md()
+        return {
+            # "type": "ras_info",
+            "category": intent,
+            "content": ras_data.get(intent, "No matching content found."),
+        }
+
+    if intent == "rescue-team":
+        if lat is not None and lon is not None:
+            try:
+                # lat = float(user_input.split("lat=")[1].split()[0])
+                # lon = float(user_input.split("lon=")[1].split()[0])
+                rescue_teams = find_nearest_rescue_team(lat, lon)
+                formatted_text = format_rescue_teams_text(rescue_teams)
+                return {
+                    # "type": "rescue_team",
+                    "category": intent,
+                    "content": formatted_text,
+                }
+            except Exception as e:
+                return {
+                    "type": "rescue_team",
+                    "error": f"Error parsing location or finding teams: {str(e)}",
+                }
+        else:
+            return {
+                "type": "rescue_team",
+                "error": "Missing location info. Please include lat= and lon= in your message.",
+            }
+
+    # location_info = None
+    if intent == "weather":
+        if lat is not None and lon is not None:
+            try:
+                # lat = float(user_input.split("lat=")[1].split()[0])
+                # lon = float(user_input.split("lon=")[1].split()[0])
+                weather_info = get_weather_by_location(lat, lon)
+                return {
+                    # "type": "weather",
+                    "category": intent,
+                    "content": weather_info,
+                }
+            except Exception as e:
+                return {
+                    # "type": "weather",
+                    "category": intent,
+                    "content": f"❌ Error parsing location: {str(e)}",
+                }
+        else:
+            return {
+                # "type": "weather",
+                "category": intent,
+                "content": "❌ Please provide your location with lat= and lon=.",
+            }
+
+    docs = retriever.invoke(user_input)
+
+    # Debug: Log kết quả tìm kiếm
+    print(f"[DEBUG] User input: {user_input}")
+    print(f"[DEBUG] Found {len(docs)} documents")
+
+    for i, doc in enumerate(docs):
+        print(f"[DEBUG] Doc {i+1}:")
+        print(f"  - Title: {doc.metadata.get('title', 'N/A')}")
+        print(f"  - Score: {doc.metadata.get('score', 'N/A')}")
+        print(f"  - Content preview: {doc.page_content[:100]}...")
+
+    if docs:
+        if len(docs) == 1:
+            guide = docs[0]
+            formatted = format_guide_for_victims(
+                {
+                    "title": guide.metadata["title"],
+                    "category": intent,
+                    "content": guide.page_content,
+                }
+            )
+            return {
+                "type": "guide",
+                "title": guide.metadata["title"],
+                "content": guide.page_content,
+                "image_url": guide.metadata["image_url"],
+                "formatted": formatted,
+            }
+        else:
+            prompt = build_prompt_with_context(user_input, retriever)
+            response = safe_send_message(prompt).text.strip()
+            return {
+                # "type": "summary",
+                "category": intent,
+                "content": response,
+            }
+    else:
+        context = (
+            f"✅ No emergency guide found in knowledge base.\n"
+            f"{location_info or 'Please provide coordinates for weather.'}\n"
+            f"Proceeding with general advice..."
+        )
+        rag_chain = (
+            {"context": lambda _: context, "question": RunnablePassthrough()}
+            | default_response_template
+            | (lambda x: safe_send_message(x.text).text.strip())
+        )
+        return {
+            "type": "general",
+            "category": intent,
+            "content": rag_chain.invoke(user_input),
+        }
+
+
+# === API Route ===
+@app.post("/chat")
+async def chat_with_ai(request: ChatRequest):
+    try:
+        result = handle_user_input(request.user_input, request.lat, request.lon)
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

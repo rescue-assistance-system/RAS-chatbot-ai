@@ -1,26 +1,14 @@
 from langchain_community.vectorstores import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
+
 from services.supabase_client import supabase
 
 embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-def initialize_vector_store(persist_directory=None, reset=False):
-    """Initialize vector store with all records from first_aid_guides."""
-    if reset and persist_directory:
-        # Clear existing collection if reset is True
-        try:
-            vectorstore = Chroma(
-                persist_directory=persist_directory,
-                embedding_function=embedding_model,
-                collection_name="first_aid_guides"
-            )
-            vectorstore.delete_collection()
-            print("[INFO] Cleared existing Chroma collection.")
-        except Exception as e:
-            print(f"[ERROR] Failed to clear Chroma collection: {str(e)}")
 
-    response = supabase.table("first_aid_guides").select("id, title, content, image_url").execute()
+def initialize_vector_store():
+    response = supabase.table("first_aid_guides").select("*").execute()
     guides = response.data
     documents = []
 
@@ -37,19 +25,15 @@ def initialize_vector_store(persist_directory=None, reset=False):
             metadata={
                 "title": guide["title"],
                 "image_url": image_url,
-                "id": str(guide["id"]),  # Unique identifier
             },
         )
         documents.append(doc)
 
-    vectorstore = Chroma.from_documents(
-        documents,
-        embedding_model,
-        persist_directory=persist_directory,
-        collection_name="first_aid_guides"  # Consistent collection name
-    )
+    vectorstore = Chroma.from_documents(documents, embedding_model)
+    # Debug: Log số lượng documents
     print(f"[DEBUG] Total documents in vectorstore: {vectorstore._collection.count()}")
 
+    # Debug: Log một vài vector samples
     if hasattr(vectorstore, "_collection"):
         sample_data = vectorstore._collection.peek(limit=3)
         print(f"[DEBUG] Sample vectors: {sample_data}")
